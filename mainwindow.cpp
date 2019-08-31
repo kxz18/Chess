@@ -25,6 +25,7 @@ MainWindow::MainWindow(QWidget *parent) :
         ui->btn_castling->setEnabled(false);
     });
     connect(timer,SIGNAL(timeout()),this,SLOT(timeCount()));
+    hasStarted=false;
 }
 
 MainWindow::~MainWindow()
@@ -34,9 +35,23 @@ MainWindow::~MainWindow()
 
 void MainWindow::on_actionServer_triggered()
 {
-    QString hostName = QHostInfo::localHostName();
-    QHostInfo hostInfo = QHostInfo::fromName(hostName);
-    QString ip = QInputDialog::getText(this,"Create a server","Host IP: ",QLineEdit::Normal,hostInfo.addresses().at(0).toString());
+    if(server != nullptr){
+        delete server;
+        server=nullptr;
+    }
+    if(client != nullptr){
+        delete client;
+        client = nullptr;
+    }
+    QString hostIP="";
+    for(auto it : QNetworkInterface::allAddresses()){
+        if(it.protocol()==QAbstractSocket::IPv4Protocol&&!(it.toString().contains("127.")))
+            hostIP=it.toString();
+    }
+    if(hostIP=="") hostIP="127.0.0.1";
+    bool confirm = true;
+    QString ip = QInputDialog::getText(this,"Create a server","Host IP: ",QLineEdit::Normal,hostIP,&confirm);
+    if(!confirm) return;
     QStringList all;
     for(auto it : QNetworkInterface::allAddresses())
         all.append(it.toString());
@@ -53,10 +68,13 @@ void MainWindow::on_actionServer_triggered()
 
 void MainWindow::on_actionClient_triggered()
 {
-    if(client != nullptr) delete client;
+    if(client != nullptr){delete client;client = nullptr;}
+    if(server != nullptr){delete server;server = nullptr;}
     client = new QTcpSocket;
     connect(client,&QAbstractSocket::stateChanged,[=](QAbstractSocket::SocketState s){qDebug()<<s;});
-    QString ip = QInputDialog::getText(this,"Join a server","Server IP: ");
+    bool confirm = true;
+    QString ip = QInputDialog::getText(this,"Join a server","Server IP: ",QLineEdit::Normal,QString(),&confirm);
+    if(!confirm) return;//if cancelled
     QStringList judge = ip.split(".");
     bool ok = true;
     if(judge.count()==4){
@@ -71,10 +89,23 @@ void MainWindow::on_actionClient_triggered()
         QMessageBox::information(this,"Error","Wrong IP");
         return;
     }
-    QHostAddress address(ip);
-    client->connectToHost(address,2333);
+    QHostAddress address(ip);   
     connect(client,SIGNAL(connected()),this,SLOT(getConnected()));
     connect(client,SIGNAL(readyRead()),this,SLOT(getCommand()));
+    connect(client,&QAbstractSocket::disconnected,this,[=](){
+        ui->txt_connection->append("Disconnect from server");
+    });
+    ui->txt_connection->clear();
+    ui->txt_connection->append("Trying to estalish connection");
+    client->connectToHost(address,2333);
+    QTimer::singleShot(2000,this,[=](){
+        if(client->state()!=QAbstractSocket::ConnectedState){
+            ui->txt_connection->append("Failed to connect to server");
+            QMessageBox::information(this,"Error","Connection failed");
+            delete client;
+            client = nullptr;
+        }
+    });
 }
 
 void MainWindow::on_btn_quit_clicked()
@@ -118,16 +149,34 @@ void MainWindow::getCommand()
 {
     ui->lcd_time->display(TURNTIME);//refresh timer
     QString info = client->readAll();
+    qDebug()<<"receive command "+info;
+    if(info == "Reset") return;//No use
     if(info == "Black"){
+        ui->txt_status->clear();
+        if(hasStarted){
+            ui->chess_board->initialize(nullptr,false);
+            ui->txt_status->append("You are white\nYour turn");
+            ui->chess_board->setYourTurn(true);
+            return;
+        }
         ui->txt_status->append("You are white");
         ui->chess_board->setYourTurn(!(ui->chess_board->isBlack()));
         ui->txt_status->append(!(ui->chess_board->isBlack())?"Your turn":"Opponent's turn");
         timer->start();
+        hasStarted=true;
     }else if(info == "White"){
+        ui->txt_status->clear();
+        if(hasStarted){
+            ui->chess_board->initialize(nullptr,true);
+            ui->txt_status->append("You are black\nOpponent's turn");
+            ui->chess_board->setYourTurn(false);
+            return;
+        }
         timer->start();
         ui->txt_status->append("You are black");
         ui->chess_board->setYourTurn(ui->chess_board->isBlack());
         ui->txt_status->append(ui->chess_board->isBlack()?"Your turn":"Opponent's turn");
+        hasStarted=true;
     }else if(info == "Forfeit"){
         ui->txt_status->append("The game was forfeited, you win");
         QMessageBox::information(this,"game over","The game was forfeited. You win!");
@@ -136,36 +185,43 @@ void MainWindow::getCommand()
     }else if(info.left(6)=="Ending"){
         Ending in = Parser::interpret(info.mid(7));
         ui->chess_board->initialize(in.data,in.isBlackFirst);
+        hasStarted=false;
         return;
-    }else
-        ui->txt_status->append(info+"\nYour turn");
+    }else if(info=="Stalemate"){
+        ui->txt_status->append("stalemate!");
+        QMessageBox::information(this,"game over","Stalemate!");
+        slt_gameOver();
+        return;
+    }else    ui->txt_status->append(info+"\nYour turn");
     ui->chess_board->getCommand(info.split(" "));
 }
 
 void MainWindow::sendCommand(QStringList command)
 {
     ui->lcd_time->display(TURNTIME);//refresh timer
-    if(command.count()==1&&command[0]!="Forfeit"&&this->server==nullptr) return;//client don't send color choice
+    if(command.count()==1&&command[0]!="Forfeit"&&command[0]!="Reset"&&command[0]!="Stalemate"&&this->server==nullptr) return;//client don't send color choice
     QString info = command.join(" ");
     if(command.count() !=1 ){
         ui->txt_status->append(info+"\nOpponent's turn");
-    }else if(command[0]!="Forfeit"){
+    }else if(command[0]=="Black"||command[0]=="White"){
         ui->txt_status->clear();//restart a game
         ui->txt_status->append("You are "+info);
         if((info=="White"&&!ui->chess_board->isBlackTurn()) ||
                 (info=="Black"&&ui->chess_board->isBlackTurn())) ui->txt_status->append("Your turn");
         else ui->txt_status->append("Opponent's turn");
         timer->start();
-    }else {
+    }else if(command[0]=="Forfeit"){
         ui->txt_status->append("The game was forfeited");
+    }else if(command[0]=="Stalemate"){
+        ui->txt_status->append("stalemate!");
     }
     if(client == nullptr)
         return;
     QByteArray ba;
     ba.clear();
-    qDebug()<<info;
     ba.append(info);
-    client->write(ba.data());
+    if(client!=nullptr) client->write(ba.data());
+    qDebug()<<"send command "+info;
     if(info == "Forfeit"){
          QMessageBox::information(this,"game over","You have forfeited the game");
          slt_gameOver();
@@ -210,27 +266,33 @@ void MainWindow::on_actionDisconnect_triggered()
         ui->txt_connection->append("\nServer shut down");
     }else if(client != nullptr){
         client->disconnectFromHost();
-        delete client;
-        client = nullptr;
-        ui->txt_connection->append("Disconnected from server");
     }
 }
 
 void MainWindow::on_btn_reset_clicked()
 {
-    if(server != nullptr || client != nullptr){
-        QStringList choice = {"Black","White"};
-        QString color = QInputDialog::getItem(this,"Choose color","Choose your color",choice,0,false);
-        ui->chess_board->initialize(nullptr,color == "Black");
-
+    if(server != nullptr){
+        sendCommand({"Reset"});
+        QString ifNew = QInputDialog::getItem(this,"Choose","Start a new game or load an ending",{"New game","Load ending"},0,false);
+        if(ifNew == "Load ending")
+            on_actionLoad_ending_triggered();
+        else{
+            QString color = QInputDialog::getItem(this,"Choose color","Choose your color",{"Black","White"},0,false);
+            ui->chess_board->initialize(nullptr,color == "Black");
+            sendCommand({color});
+        }
+    }else if(client != nullptr){
+        QMessageBox::information(this,"Error","Only server can reset!");
     }
 }
 
 void MainWindow::slt_gameOver()
 {
     timer->stop();
-    delete client;
-    client = nullptr;
+    /*if(client != nullptr){
+        delete client;
+        client = nullptr;
+    }*/
 }
 
 void MainWindow::on_btn_forfeit_clicked()
@@ -263,6 +325,7 @@ void MainWindow::on_actionSave_ending_triggered()
 void MainWindow::on_actionLoad_ending_triggered()
 {
     QString fileName = QFileDialog::getOpenFileName(this,"Load ending","./");
+    if(fileName=="") return;
     Ending data = Parser::interpret(fileName);
     ui->chess_board->initialize(data.data,data.isBlackFirst);
     QFile f(fileName);
@@ -272,6 +335,6 @@ void MainWindow::on_actionLoad_ending_triggered()
     sendCommand(co.split(" "));
     QString color = QInputDialog::getItem(this,"Choose color","Choose your color",{"Black","White"},0,false);
     ui->chess_board->initialize(data.data,color == "Black");
-    ui->chess_board->setYourTurn(data.isBlackFirst&&color=="Black");
+    ui->chess_board->setYourTurn((data.isBlackFirst&&color=="Black")||(!data.isBlackFirst&&color=="White"));
     sendCommand({color});
 }

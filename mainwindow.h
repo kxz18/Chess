@@ -66,6 +66,7 @@ private:
     QTcpServer *server;
     QTcpSocket *client;
     QTimer *timer;
+    bool hasStarted;
 };
 
 #endif // MAINWINDOW_H

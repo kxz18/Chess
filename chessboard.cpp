@@ -370,6 +370,10 @@ void ChessBoard::setPath(const ChessPiece *cur)
         }
         break;
     }
+    for(auto it : selected_pos.keys()){
+        if(it.x()<0||it.x()>7||it.y()<0||it.y()>7)
+            selected_pos.remove(it);
+    }
 }
 
 bool ChessBoard::checkWin()
@@ -398,6 +402,76 @@ bool ChessBoard::checkLose()
     can_move = false;
     emit gameOver();
     return true;
+}
+
+bool ChessBoard::checkStalemate(){
+    if(check()) return false;
+    QList<QPoint> canMove;
+    for(auto it : *chess_pieces){
+        if(it.is_black==this->is_black){
+            selected_pos.clear();
+            setPath(chessAt(it.x,it.y));
+            canMove = selected_pos.keys();//all can move position
+            selected_pos.clear();
+            ChessPiece* nowTest = chessAt(it.x,it.y);
+            QPoint nowPos = QPoint(it.x,it.y);
+            for(auto pos : canMove){
+                if(pos==nowPos) continue;
+                ChessPiece* tmpDel = nullptr;
+                if(chessAt(pos.x(),pos.y())!=nullptr){
+                    tmpDel = new ChessPiece(PAWN,1,1,false);
+                    *tmpDel=*chessAt(pos.x(),pos.y());
+                    chess_pieces->removeOne(*chessAt(pos.x(),pos.y()));
+                }
+                nowTest->x=pos.x();nowTest->y=pos.y();
+                if(!check()){
+                    nowTest->x=nowPos.x();
+                    nowTest->y=nowPos.y();
+                    if(tmpDel!=nullptr){
+                        chess_pieces->append(*tmpDel);
+                        delete tmpDel;
+                    }
+                    return false;
+                }else{
+                    nowTest->x=nowPos.x();
+                    nowTest->y=nowPos.y();
+                    if(tmpDel!=nullptr){
+                        chess_pieces->append(*tmpDel);
+                        delete tmpDel;
+                    }
+                }
+            }
+        }
+    }
+    //no chess piece can move
+    return true;
+}
+
+bool ChessBoard::check()
+{
+    ChessPiece* king = nullptr;
+    for(auto it : *chess_pieces){
+        if(it.type==KING && it.is_black==this->is_black){
+            king = chessAt(it.x,it.y);
+            break;
+        }
+    }//get king position
+    if(king == nullptr) return true;
+    //check if king is checked
+    QList<QPoint> attacked;
+    this->is_black=!this->is_black; //temporarily change color
+    for(auto it : *chess_pieces){
+        if(it.is_black==this->is_black){
+            selected_pos.clear();
+            setPath(chessAt(it.x,it.y));
+            attacked+=selected_pos.keys();
+            selected_pos.clear();
+        }
+    }
+    selected_pos.clear();
+    this->is_black=!this->is_black;
+    if(attacked.contains(QPoint(king->x,king->y))) return true;
+    else return false;
 }
 
 ChessPiece* ChessBoard::chessAt(int x, int y)
@@ -531,8 +605,15 @@ void ChessBoard::getCommand(const QStringList &command)
         }
     }
     update();
+
     checkWin();
     checkLose();
+    if(checkStalemate()){
+        emit sendCommand({"Stalemate"});
+        QMessageBox::information(this,"Game over","Stalemate!");
+        can_move=false;
+        emit gameOver();
+    }
     can_move = true;
 }
 
@@ -553,7 +634,18 @@ void ChessBoard::setYourTurn(bool y)
 
 bool ChessBoard::castling()
 {
-    if((!lCas&&!sCas) || !can_move) return false;
+    //for load ending
+    bool b = this->is_black;
+    if(b && (chessAt(4,7*b)==nullptr||chessAt(4,7*b)->type!=KING||chessAt(4,7*b)->is_black!=b)){
+        lCas=false;
+        sCas=false;
+    }
+    if(b && (chessAt(0,7*b)==nullptr||chessAt(0,7*b)->type!=ROOK||chessAt(0,7*b)->is_black!=b))
+        lCas=false;
+    if(b && (chessAt(7,7*b)==nullptr||chessAt(7,7*b)->type!=ROOK||chessAt(7,7*b)->is_black!=b))
+        sCas=false;
+
+    if(chess_pieces==nullptr||(!lCas&&!sCas) || !can_move) return false;
     else{//king and rook haven't moved
         QList<QPoint> attacked;
         ChessPiece *king = nullptr;

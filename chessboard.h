@@ -53,6 +53,8 @@ public:
     void setPath(const ChessPiece* cur);
     bool checkWin();
     bool checkLose();
+    bool checkStalemate();
+    bool check();
     ChessPiece* chessAt(int x,int y);
     static QPoint toPoint(const QString &point);
     static QString toString(int x,int y);
